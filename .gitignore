@@ -3,5 +3,6 @@ core*
 *log
 *.dat
 *.ini
+*.csv
 o2*
 worker*

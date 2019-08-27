@@ -16,8 +16,8 @@ import subprocess
 from glob import glob
 
 JOBSDIR = "$WORK/alice/jobs"
-REMASK = "jid([0-9]+)-nevt([0-9]+)-njobs([0-9]+)"
-SACCTCMD = "sacct --format=JobID,CPUTimeRAW,ElapsedRAW,UserCPU,AveRSS,MaxRSS --delimiter=, -P --noconvert --jobs=%s"
+REMASK = "jid([0-9]+)-nevt([0-9]+)-njobs([0-9]+)-ninst([0-9]+)"
+SACCTCMD = "sacct --format=JobID,UserCPU,ElapsedRAW,AveRSS,MaxRSS --delimiter=, -P --noconvert --jobs=%s"
 
 def convtime(raw):
     """Converts format [DD-[HH:]]MM:SS to seconds.
@@ -30,10 +30,11 @@ def convtime(raw):
         sec += int(m.group(2), 10) * 86400
     return sec
 
-def main():
+def slurmStats():
     globDir = os.path.join(os.path.expandvars(JOBSDIR), sys.argv[1])
     allJobs = {}
-    jobFields = [ "jobId", "nEvt", "nJobs", "success", "shMem", "cpuTime", "wallTime", "userCpu", "aveRss", "maxRss" ]
+    jobFields = [ "jobId", "nEvt", "nProc", "nInst", "nInstOk", "nShMem", "slurmUserCpu",
+                  "slurmWallTime", "slurmAveRss", "slurmMaxRss" ]
 
     # Get information from the jobs directory
     for jobDirFull in sorted(glob(globDir)):
@@ -45,8 +46,28 @@ def main():
             j = {}
             j["jobId"] = int(m.group(1))
             j["nEvt"] = int(m.group(2))
-            j["nJobs"] = int(m.group(3))
-            j["success"] = os.path.isfile(os.path.join(jobDirFull, "o2sim.root"))
+            j["nProc"] = int(m.group(3))
+            j["nInst"] = int(m.group(4))
+            # Now inspect subdirs
+            success = 0
+            nShMem = 0
+            for i in range(j["nInst"]):
+                subJobDir = os.path.join(jobDirFull, "job%d" % i)
+                if os.path.isfile(os.path.join(subJobDir, "o2sim.root")):
+                    success += 1
+                else:
+                    continue
+                shMem = True
+                with open(os.path.join(subJobDir, "output.log")) as jl:
+                    for line in jl:
+                        if "COULD NOT CREATE SHARED MEMORY" in line:
+                            shMem = False
+                            break
+                if shMem:
+                    nShMem += 1
+
+            j["nInstOk"] = success
+            j["nShMem"] = nShMem
             allJobs[j["jobId"]] = j
 
     # Append accounting information from `sacct`
@@ -55,41 +76,72 @@ def main():
         po = subprocess.Popen((SACCTCMD % jids).split(), stdout=subprocess.PIPE, stderr=dn)
         with po.stdout:
             rd = csv.reader(po.stdout)
-            for jid,cpu,wall,usercpu,averss,maxrss in rd:
+            for jid,usercpu,wall,averss,maxrss in rd:
                 if jid.endswith(".batch"):
                     jid = int(jid.split(".", 1)[0])
-                    allJobs[jid].update({ "cpuTime": int(cpu),
-                                          "wallTime": int(wall),
-                                          "userCpu": convtime(usercpu),
-                                          "aveRss": int(averss),
-                                          "maxRss": int(maxrss) })
+                    allJobs[jid].update({ "slurmWallTime": int(wall),
+                                          "slurmUserCpu": convtime(usercpu),
+                                          "slurmAveRss": int(averss),
+                                          "slurmMaxRss": int(maxrss) })
         po.wait()
 
-    # Retrieve information about the use of Shared Memory vs. ZeroMQ
-    for jid in allJobs:
-        jobLog = glob(os.path.join(os.path.expandvars(JOBSDIR), "%d*.out.log" % jid))[0]
-        # Example of ZeroMQ fallback output:
-        #   [INFO] CREATING SIM SHARED MEM SEGMENT FOR 200 WORKERS
-        #   shmget: shmget failed: Cannot allocate memory
-        #   [INFO] SHARED MEM INITIALIZED AT ID -1
-        #   [WARN] COULD NOT CREATE SHARED MEMORY ... FALLING BACK TO SIMPLE MODE
-        # Example of successful Shared Memory init:
-        #   [INFO] CREATING SIM SHARED MEM SEGMENT FOR 20 WORKERS
-        shmem = True
-        with open(jobLog) as jl:
-            for line in jl:
-                if "COULD NOT CREATE SHARED MEMORY" in line:
-                    shmem = False
-                    break
-        allJobs[jid]["shMem"] = shmem
+    # Write Slurm stats to a file
+    with open("slurm_stats.csv", "w") as js:
+        wr = csv.DictWriter(js, fieldnames=jobFields)
+        wr.writeheader()
+        for jid in allJobs:
+            wr.writerow(allJobs[jid])
+    print("Jobs stats written to slurm_stats.csv")
 
-    # Write table to CSV for later processing
-    wr = csv.DictWriter(sys.stdout, fieldnames=jobFields)
-    wr.writeheader()
-    for jid in allJobs:
-        wr.writerow(allJobs[jid])
+def parsePsmon():
+    globDir = os.path.join(os.path.expandvars(JOBSDIR), sys.argv[1])
+    fields = [ "pid", "ppid", "etimes", "cputime", "vsz", "rsz", "drs", "trs", "cmd" ]
 
-    #print(json.dumps(allJobs, indent=4))
+    with open("psmon.csv", "w") as csvfp:
+        csvout = csv.writer(csvfp)
+        csvout.writerow(["jobId", "nEvt", "nProc", "nInst", "elapsed", "cpuEff"])
+
+        for jobDirFull in sorted(glob(globDir)):
+            psMon = os.path.join(jobDirFull, "psmon.txt")
+            if not os.path.isfile(psMon):
+                continue
+            m = re.search(REMASK, os.path.basename(jobDirFull))
+            if not m:
+                continue
+            jobId = int(m.group(1))
+            nEvt = int(m.group(2))
+            nProc = int(m.group(3))
+            nInst = int(m.group(4))
+            print("Parsing %s" % psMon)
+
+            cpuEffSample = 0.
+            elapsed = -1
+            with open(psMon) as pm:
+                # pid=,ppid=,etimes=,cputime=,vsz=,rsz=,drs=,trs=,cmd=
+                for line in pm:
+                    if line.startswith("---"):
+                        if elapsed > -1:
+                            # Dump data
+                            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample])
+                        cpuEffSample = 0.
+                        elapsed = -1
+                        continue
+                    rec = dict(zip(fields, line.split(None, len(fields)-1)))
+                    rec["cputime"] = convtime(rec["cputime"])
+                    for f in fields:
+                        rec[f] = int(rec[f]) if f != "cmd" else rec[f].strip()
+                    if rec["etimes"] > 0:
+                        cpuEffSample += float(rec["cputime"]) / float(rec["etimes"])
+                    if "slurm_script" in rec["cmd"] and rec["etimes"] > elapsed:
+                        # Job running time == Slurm script elapsed time
+                        # TODO this is quite weak, works with Slurm and a single dedicated node...
+                        elapsed = rec["etimes"]
+                        
+            # Dump data
+            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample])
+
+    print("Process monitoring stats written to psmon.csv")
 
 if __name__ == "__main__":
-    main()
+    slurmStats()
+    parsePsmon()
