@@ -141,13 +141,18 @@ case "$STEP" in
     # Test job for simulation. We can run multiple instances of the job at the same time
 
     PROCESSES=()
+    NEVT_PER_INST=$((N_EVENTS/N_JOBS))
     for ((I=0; I<$N_JOBS; I++)); do
         # Each test job has its own workdir
         mkdir job$I
         pushd job$I
-            echo "Running simulation with $N_PROC jobs and $N_EVENTS events, job $I"
+            NEVT_THIS_INST=$NEVT_PER_INST
+            if [[ $I == 0 ]]; then
+                NEVT_THIS_INST=$(( N_EVENTS - (NEVT_PER_INST * (N_JOBS-1)) ))
+            fi
+            echo "Running simulation with $N_PROC jobs and $NEVT_THIS_INST events, job $I"
             set -x
-            o2-sim ${N_PROC:+-j $N_PROC} -n $N_EVENTS --skipModules ZDC CPV MID -g pythia8 &> output.log &
+            o2-sim ${N_PROC:+-j $N_PROC} -n $NEVT_THIS_INST --skipModules ZDC CPV MID -g pythia8 &> output.log &
             PROCESSES+=($!)
             set +x
         popd
