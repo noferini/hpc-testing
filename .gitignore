@@ -1,5 +1,7 @@
 core*
 *.root
-*.log
+*log
 *.dat
 *.ini
+o2*
+worker*
