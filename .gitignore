@@ -6,3 +6,4 @@ core*
 *.csv
 o2*
 worker*
+*.swp
