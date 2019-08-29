@@ -10,10 +10,37 @@
 # Redirect all stderr to stdout
 exec 2>&1
 
+# Detect whether we are running through Slurm
+if [[ ! $SUBMIT_JOB_ID ]]; then
+  if [[ $SLURM_JOB_NAME ]]; then
+    # Rely on Slurm environment variables
+    export SUBMIT_MAX_PROCESSOR_THREADS=$SLURM_JOB_CPUS_PER_NODE
+    export SUBMIT_JOB_NAME=$SLURM_JOB_NAME
+    export SUBMIT_JOB_ID=$SLURM_JOB_ID
+    if [[ $(hostname -d) == marconi.cineca.it && $WORK ]]; then
+      # On Marconi @ CINECA: rely on $WORK
+      export SUBMIT_OUTPUT_PREFIX="$WORK/alice/jobs"
+    fi
+  else
+    # Not using Slurm
+    export SUBMIT_MAX_PROCESSOR_THREADS=$(grep -c bogomips /proc/cpuinfo)
+    export SUBMIT_JOB_NAME=
+    export SUBMIT_JOB_ID=$(date --utc +%Y%m%d%H%M%S)
+    export SUBMIT_OUTPUT_PREFIX="$(cd "$(dirname "$0")"; pwd)/jobs"
+
+    # All output from this job is tee'd to a file
+    echo "Check logfile: ${SUBMIT_OUTPUT_PREFIX}/${SUBMIT_JOB_ID}.out.log" >&2
+    mkdir -p "$SUBMIT_OUTPUT_PREFIX"
+    exec &> >(tee -a "${SUBMIT_OUTPUT_PREFIX}/${SUBMIT_JOB_ID}.out.log")
+  fi
+else
+  echo "SUBMIT variables already set"
+fi
+
 # Parse command-line options and export proper variables
 ARGS=("$@")
 N_EVENTS=0                                                      # Number of events
-N_PROC=$SLURM_JOB_CPUS_PER_NODE                                 # Number of parallel processes per job
+N_PROC=$SUBMIT_MAX_PROCESSOR_THREADS                            # Number of parallel processes per job
 N_JOBS=1                                                        # Number of instances in same node
 LOAD_PACKAGES="O2/nightly-$(TZ=Europe/Zurich date +%Y%m%d)-1"   # CVMFS packages, comma-separated
 CVMFS_NAMESPACE='/cvmfs/alice-nightlies.cern.ch'                # CVMFS namespace
@@ -34,6 +61,14 @@ while [[ $# -gt 0 ]]; do
     ;;
     --packages)
       LOAD_PACKAGES=$2
+      shift
+    ;;
+    -J)
+      if [[ $SLURM_JOB_NAME ]]; then
+        echo "ERROR: submitting on Slurm, pass -J to sbatch instead"
+        exit 1
+      fi
+      SUBMIT_JOB_NAME=$2
       shift
     ;;
     --cvmfs-namespace)
@@ -57,31 +92,43 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Job must have a name
+if [[ ! $SUBMIT_JOB_NAME ]]; then
+  echo "ERROR: job must have a name, use -J to set"
+  exit 1
+fi
+
 # Current executable
 PROG=$(cd "$(dirname "$0")"; pwd)/$(basename "$0")
 
 # Create a work directory (local) and work there
 export MY_WORKING_DIRECTORY="$(mktemp -d)"
 cd "$MY_WORKING_DIRECTORY"
+echo "Working from $(pwd)"
 
 # Create output directory (shared): output will be copied there at the end
 if [[ ! $MY_OUTPUT_DIRECTORY ]]; then
   if [[ $STEP == sim || $STEP == digi || $STEP == itsreco ]]; then
     # Use fixed directory
-    export MY_OUTPUT_DIRECTORY="$WORK/alice/jobs/$(TZ=Europe/Zurich date +%Y%m%d-%H%M%S)-${SLURM_JOB_NAME}-jid${SLURM_JOB_ID}-nevt${N_EVENTS}-njobs${N_PROC}-ninst${N_JOBS}"
+    export MY_OUTPUT_DIRECTORY="${SUBMIT_OUTPUT_PREFIX}/$(TZ=Europe/Zurich date +%Y%m%d-%H%M%S)-${SUBMIT_JOB_NAME}-jid${SUBMIT_JOB_ID}-nevt${N_EVENTS}-njobs${N_PROC}-ninst${N_JOBS}"
   else
     # Use unique dir
-    export MY_OUTPUT_DIRECTORY="$WORK/alice/jobs/$SLURM_JOB_ID"
+    export MY_OUTPUT_DIRECTORY="${SUBMIT_OUTPUT_PREFIX}/${SUBMIT_JOB_ID}"
   fi
   mkdir -p "$MY_OUTPUT_DIRECTORY"
 fi
 
 if [[ ! $SINGULARITY_CONTAINER ]]; then
   # Not in the Singularity container. Re-exec self in a container!
+
+  # Copy script so that it can be modified without affecting the job
+  cp -p "$PROG" "$MY_OUTPUT_DIRECTORY/singularity_entrypoint"
+
   exec singularity exec --contain --ipc --pid \
-                        --bind /cvmfs,/scratch_local,$CINECA_SCRATCH,$WORK,$(dirname "$PROG") \
+                        --home /dummy_home \
+                        --bind "/cvmfs,$MY_OUTPUT_DIRECTORY" \
                         /cvmfs/alice-nightlies.cern.ch/singularity/alisw/slc7-builder \
-                        "$PROG" "${ARGS[@]}"
+                        "$MY_OUTPUT_DIRECTORY/singularity_entrypoint" "${ARGS[@]}"
 fi
 
 ### From this point on: we are inside Singularity ###
