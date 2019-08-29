@@ -99,7 +99,7 @@ def parsePsmon():
 
     with open("psmon.csv", "w") as csvfp:
         csvout = csv.writer(csvfp)
-        csvout.writerow(["jobId", "nEvt", "nProc", "nInst", "elapsed", "cpuEff"])
+        csvout.writerow(["jobId", "nEvt", "nProc", "nInst", "elapsed", "cpuEff", "vsz", "rsz"])
 
         for jobDirFull in sorted(glob(globDir)):
             psMon = os.path.join(jobDirFull, "psmon.txt")
@@ -116,15 +116,19 @@ def parsePsmon():
 
             cpuEffSample = 0.
             elapsed = -1
+            vszSample = 0
+            rszSample = 0
             with open(psMon) as pm:
                 # pid=,ppid=,etimes=,cputime=,vsz=,rsz=,drs=,trs=,cmd=
                 for line in pm:
                     if line.startswith("---"):
                         if elapsed > -1:
                             # Dump data
-                            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample])
+                            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample, vszSample, rszSample])
                         cpuEffSample = 0.
                         elapsed = -1
+                        vszSample = 0
+                        rszSample = 0
                         continue
                     rec = dict(zip(fields, line.split(None, len(fields)-1)))
                     rec["cputime"] = convtime(rec["cputime"])
@@ -132,13 +136,15 @@ def parsePsmon():
                         rec[f] = int(rec[f]) if f != "cmd" else rec[f].strip()
                     if rec["etimes"] > 0:
                         cpuEffSample += float(rec["cputime"]) / float(rec["etimes"])
+                    vszSample += int(rec["vsz"])
+                    rszSample += int(rec["rsz"])
                     if "slurm_script" in rec["cmd"] and rec["etimes"] > elapsed:
                         # Job running time == Slurm script elapsed time
                         # TODO this is quite weak, works with Slurm and a single dedicated node...
                         elapsed = rec["etimes"]
                         
             # Dump data
-            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample])
+            csvout.writerow([jobId, nEvt, nProc, nInst, elapsed, cpuEffSample, vszSample, rszSample])
 
     print("Process monitoring stats written to psmon.csv")
 
