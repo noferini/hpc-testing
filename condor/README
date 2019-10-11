@@ -1,0 +1,16 @@
+Here a simple example to submit a job to htcondor (Marconi@Cinec)
+
+Setup:
+- since proxy available then -> export _condor_SEC_CLIENT_AUTHENTICATION_METHODS=GSI
+
+submission:
+> condor_submit -pool CE_AT_CINECA:CE_PORT -remote CE_AT_CINECA -spool pptest.jdl
+
+check queue:
+> condor_q -name CE_AT_CINECA -pool CE_AT_CINECA:CE_PORT
+
+retrive output:
+> condor_transfer_data -name CE_AT_CINECA -pool CE_AT_CINECA:CE_PORT JOBID
+or
+> ./fetchoutput.sh JOBID
+

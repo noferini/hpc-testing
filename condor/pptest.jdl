@@ -1,0 +1,16 @@
+# Unix submit description file
+# sleep.sub -- simple sleep job
+
+Universe = vanilla
+
++Owner = UNDEFINED
+
+executable              = pptest.sh
+log                     = pptest.log
+output                  = pptest.out,*.log
+error                   = pptest.err
+should_transfer_files   = Yes
+when_to_transfer_output = ON_EXIT
+use_x509userproxy = true
+arguments = ""
+queue 1
